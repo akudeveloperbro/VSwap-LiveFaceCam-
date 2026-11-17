@@ -1,5 +1,7 @@
 # Performance and latency targets
 
+> **Architecture revision:** These targets were originally framed for local desktop processing. They are not verified web, browser-CPU, WebRTC, or cloud-worker baselines. See [web platform architecture](WEB_PLATFORM_ARCHITECTURE.md), [hybrid processing](HYBRID_PROCESSING_ARCHITECTURE.md), and [WebRTC architecture](WEBRTC_STREAMING_ARCHITECTURE.md) for the proposed web direction.
+
 ## Goal and baseline status
 
 Priority order: stable real-time operation, visual quality, then client compatibility. The user-specified initial target is 720p output at 30 FPS; 60 FPS is an optimization target, not a launch promise. This audit did not run benchmarks or attach a camera/GPU. README and `ROADMAP.md` quote performance observations from prior project work, but they are not a reproducible current baseline for this branch or a WhatsApp call.

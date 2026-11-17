@@ -1,38 +1,33 @@
-# Real-time video pipeline
+# Realtime video pipeline assessment
 
 ## Current implementation (verified by source inspection)
 
-Live preview is implemented inside the Python/PySide6 desktop app, not in a web service. `modules/ui.py` creates a `_CaptureWorker` and `_ProcessingWorker`; capture and processed queues are both bounded to two frames and discard an older frame when full. The processing loop reads the current source image, periodically detects faces, invokes frame processors, optionally sends output to the virtual camera, and queues a preview frame for the UI. This latest-frame policy limits backlog but does not by itself measure frame age or guarantee a latency bound.
+The current live preview is inside the Python/PySide6 desktop application, not a web service. `modules/ui.py` creates `_CaptureWorker` and `_ProcessingWorker`; capture and processed queues are bounded to two frames and discard an older frame when full. Processing periodically detects faces, invokes frame processors, optionally sends output to the virtual camera and queues a preview frame for the UI. This latest-frame policy limits backlog but does not itself measure frame age or guarantee a latency bound.
 
-`modules/video_capture.py` opens OpenCV camera devices and measures a startup FPS estimate. `modules/face_analyser.py` provides detection-only fast paths and optional landmark completion. `modules/processors/frame/face_swapper.py` includes InsightFace analysis/swap sessions, model selection, paste-back and optional image adjustments. The live loop uses a detection interval of approximately 80 ms (`round(camera_fps * 0.08)` frames); this is periodic detection, not face tracking. The `ROADMAP.md` likewise lists face tracking as future work.
+`modules/video_capture.py` opens OpenCV camera devices and measures a startup FPS estimate. `modules/face_analyser.py` provides detection paths and optional landmark completion. `modules/processors/frame/face_swapper.py` contains swap processing. `modules/virtual_camera.py` targets a fixed 1280x720, 30 FPS `pyvirtualcam` output. The README describes OBS virtual-camera setup. This is not evidence of a headless engine API, browser processing, WebRTC, native camera drivers or WhatsApp support.
 
-`modules/virtual_camera.py` targets a fixed 1280x720, 30 FPS `pyvirtualcam` output. The current source uses OBS-provided virtual camera setup per its docstring/README. This is not evidence of a native Windows camera driver implementation or macOS CoreMediaIO extension maintained by this repository.
+## Revised target architecture
 
-## Proposed target pipeline
+VSwap is web-first, but the web frontend does not become the inference engine. The intended future path is:
 
-1. **Opt-in camera session**: explicit start, visible active state, selected camera and resolution; acquire only after user action.
-2. **Capture**: one owner per camera stream; timestamp frames at acquisition; release the device on stop, error, window close and application exit.
-3. **Bounded latest-frame handoff**: small bounded queues; discard stale frames under overload and count every drop. Measure capture-to-consume age rather than queue depth alone.
-4. **Face detection/tracking**: detect, associate detections with stable tracks, validate track confidence, and periodically refresh detection. Reset on camera/scene/source changes; never reuse stale coordinates indefinitely.
-5. **Landmarks/alignment**: compute only required landmarks, align to the selected model, and reject invalid/low-confidence geometry safely.
-6. **Source identity**: compute/load the authorized source embedding once per source revision and reuse it; source changes invalidate the cache explicitly.
-7. **Inference**: long-lived, reusable ONNX sessions on the selected execution provider; avoid session initialization in the frame loop; make CPU/GPU transfers explicit and measured.
-8. **Compositing/render**: mask, blend and color match; use temporal tracking/smoothing only when measured visual stability improves without unacceptable lag. Do not use simple frame averaging as a tracking substitute.
-9. **Frame pacing/output**: pace to the device's supported output rate, define behavior when inference is slower (latest frame, bounded repeats or explicit degraded state), and deliver through a replaceable virtual-camera adapter.
-10. **Preview/diagnostics**: display preview and per-stage metrics without blocking inference; redact media and sensitive identifiers from logs.
+```text
+Browser camera/file → explicit mode + consent → API/session authorization
+  ├─ approved local browser CPU capability (unverified investigation)
+  └─ WebRTC or asynchronous job → independent orchestration → reusable Python engine worker
+                                               └─ provider adapter → external GPU (vendor TBD)
+```
 
-## Boundaries and ownership
+WebRTC is reserved for persistent interactive media sessions; WebSocket handles signaling/control/progress, not per-frame media processing. Image/video work uses private media upload and asynchronous jobs. The current desktop pipeline remains an existing product adapter and engine reference; no implementation conversion is asserted.
 
-Keep the frame engine independent from PySide6 and camera APIs behind interfaces such as `CameraSource`, `FaceSwapEngine`, and `VideoOutput`. This repository can own the local native agent and reusable Python engine. A future web dashboard may configure a paired local agent, but should not capture a webcam in the browser and imply that this output becomes WhatsApp's camera. A hosted backend/GPU worker is a separate product path and is not needed for local real-time calls.
+## Boundaries and requirements
 
-## Reliability and privacy requirements
+- Separate UI, API/control plane, signaling/media transport, orchestration, worker runtime, processing engine and provider adapter.
+- Keep authentication, model/provider secrets, storage credentials and routing decisions out of the browser and engine package.
+- Obtain explicit consent before camera acquisition and again before remote upload/streaming; distinguish local preview from transformed output and from a successful backend session.
+- Bound queues and session/job resources; measure frame timestamps, capture-to-output age, FPS, jitter and dropped frames. Drop stale live frames instead of accumulating delay.
+- On camera denial, unsupported local runtime, worker/provider failure, overload or network loss, show a truthful recoverable state; never present an untransformed preview as a successful swap.
+- Avoid raw media and face embeddings in logs/telemetry; establish storage, retention and deletion controls before cloud processing.
 
-- Camera capture begins only after an explicit user action; visibly distinguish camera preview from transformed output.
-- Stop camera tracks/device handles and virtual-camera output deterministically, including partial-start failures.
-- On detector/inference/output exception, report a visible recoverable error, stop or enter a defined safe degraded mode, and avoid silently displaying stale transformed output.
-- Bound queues, retry counts, model initialization, memory use, and shutdown waits. Do not turn transient frame failure into an unbounded retry loop.
-- Require the user to have authorization for source and target likenesses; explain local processing and any network access. Do not add recording, cloud upload, or retention without an explicit design and consent.
+## Status
 
-## Status and validation
-
-Architecture proposal only. Current code provides a functional local capture → detect → swap → preview / virtual-camera path, but this audit has not run a camera, GPU inference, WhatsApp call, or sustained-session test. See [performance targets](PERFORMANCE_AND_LATENCY_TARGETS.md) and [implementation plan](REALTIME_ENGINE_IMPLEMENTATION_PLAN.md).
+Architecture proposal only. The local desktop flow and related modules are present, but this assessment did not run a camera, GPU benchmark, cloud worker or WebRTC session. Refer to [web platform architecture](WEB_PLATFORM_ARCHITECTURE.md), [WebRTC design](WEBRTC_STREAMING_ARCHITECTURE.md), [worker design](CLOUD_GPU_WORKER_ARCHITECTURE.md), and [performance targets](PERFORMANCE_AND_LATENCY_TARGETS.md).

@@ -1,89 +1,42 @@
-# Real-time engine implementation plan
+# Realtime engine implementation plan
 
-## Goal
+## Goal and status
 
-Evolve the existing local Python desktop pipeline into a measured, reliable, low-latency camera-to-virtual-camera engine, then verify compatibility with named WhatsApp clients. This is a proposal only. No application source code, camera behavior, model, backend, or integration was changed as part of this audit.
+This document now aligns the engine workstream with the approved-in-principle web-first product direction. It is a proposal only. The existing LiveFaceCam repository is the AI engine foundation; it remains a Python/PySide6 desktop application today. No web backend, headless engine service, cloud worker, WebRTC service or provider integration was verified in the inspected source. Do not rewrite or modify the engine as part of this architecture-documentation revision.
 
-## Existing assets to preserve
+## Verified engine foundation
 
-- **Camera capture:** `modules/video_capture.py` already wraps OpenCV device opening, actual resolution/FPS reporting and release.
-- **Bounded latest-frame flow:** `_CaptureWorker` and `_ProcessingWorker` in `modules/ui.py` use size-two queues and replace old frames on overflow.
-- **Detection/inference:** `modules/face_analyser.py` contains detection-only paths and optional landmarks; `modules/processors/frame/face_swapper.py` owns swap models, paste-back, optional enhancement and adjustment logic.
-- **Output adapter:** `modules/virtual_camera.py` provides a small `pyvirtualcam` abstraction with letterboxing and close behavior.
-- **Existing validation seed:** `tests/test_ui_live_preview.py` covers selected UI-worker shutdown/source-loading control flow; `benchmark_pipeline.py` measures a subset of pipeline stages.
+- `modules/video_capture.py` wraps OpenCV device opening, reports actual resolution/FPS and releases the device.
+- `modules/ui.py` contains `_CaptureWorker` and `_ProcessingWorker`; live capture and processing use bounded size-two queues that discard older frames under overflow.
+- `modules/face_analyser.py` includes detection paths and optional landmarks; `modules/processors/frame/face_swapper.py` owns swap models, paste-back and optional enhancement/adjustment logic.
+- `modules/virtual_camera.py` wraps `pyvirtualcam`, with letterboxing and close behavior; current README/docstrings describe the OBS virtual camera route.
+- `benchmark_pipeline.py` measures a subset of a local webcam pipeline; its current parameters do not establish web/cloud performance.
+- `ROADMAP.md` records uncompleted issues and proposed features. README/model terms include non-commercial/research restrictions for some models; review each model's terms before web or commercial deployment.
 
-Preserve the local desktop-first boundary. Extract interfaces incrementally; do not rewrite the current face engine or move inference into a web/browser runtime merely to add a dashboard.
+These are source/repository observations, not proof of cloud readiness, current deployment performance, rights to redistribute weights, or WhatsApp compatibility.
 
-## Gaps and risks found
+## Revised direction
 
-- Live detection is periodic (~80 ms), but there is no identity/landmark tracker; the roadmap explicitly lists tracking as future work.
-- Queue bounds/drop-oldest are present, but capture timestamps, frame-age reporting, output FPS/drop metrics, overload status and end-to-end local latency measurement are not evident in the live loop.
-- Current virtual output is fixed 1280x720@30, and depends on platform/OBS setup; no native driver or WhatsApp client test is present.
-- Camera startup/FPS probing and lifecycle deserve adversarial tests; `ROADMAP.md` lists a blocking camera probe issue.
-- Worker failure, camera disconnect, source changes, stop/restart and sustained memory/resource behavior need explicit coverage beyond the current tests.
-- The benchmark uses InSwapper and 1080p camera assumptions and is not a current, reproducible 720p30 WhatsApp baseline.
-- No WhatsApp integration, web dashboard, backend/auth/storage service, browser transformed track, or mobile implementation was found. Do not introduce these without an approved product decision.
-- Model/data licenses differ; preserve current licensing notices and review model license before changing model distribution or commercial claims.
+Extract a reusable, versioned, headless Python engine boundary incrementally, retaining the desktop GUI as an existing adapter. Keep provider lifecycle, API authentication, media storage, and orchestration outside the engine. The future worker wraps a defined engine protocol and pins runtime/model versions. A browser-local CPU implementation is a separate feasibility investigation and must not be inferred from Python CPU support.
 
-## Sequenced implementation
+## Work sequence (proposal)
 
-### 0. Product and reference-device decision
+1. **Engine and license audit:** inventory import-time GUI coupling, model downloads, filesystem assumptions, provider selection, model licenses, media handling and deterministic cleanup. Define capability and version metadata.
+2. **Contract design:** specify session open/process/close and batch asset semantics; input/output formats, timestamp propagation, limits, errors and health. No provider SDK in the engine API.
+3. **Headless extraction spike:** introduce a narrow service/test harness while preserving desktop behavior; use stubs for camera and model dependencies. Keep changes reversible and separately approved.
+4. **Worker packaging:** pin runtime and model artifacts by digest/version; run as least-privileged process with bounded memory, queue, CPU/GPU time, input dimensions and session lifetime.
+5. **Performance and quality baseline:** benchmark representative authorized media and reference hardware; timestamp frames monotonically; report stage times, queue age/drops, FPS, p50/p95 frame age and memory. Do not use existing README FPS claims as a cloud baseline.
+6. **Fault and isolation validation:** test cold model load, bad media, slow inference, worker cancellation/crash, concurrent tenant isolation, resource cleanup, and model/runtime mismatch.
+7. **Adapter and provider work:** only after provider evaluation approval, integrate through the separate provider abstraction. Compare batch and persistent streaming use cases independently.
 
-Choose launch OS, reference machine/GPU, camera, model, WhatsApp Desktop/Web build, target privacy model, and whether product remains local-first. Confirm the proposed 720p30 and p95 100 ms local frame-age gate in [performance targets](PERFORMANCE_AND_LATENCY_TARGETS.md). These choices determine what can actually be measured and supported.
+## Open technical blockers
 
-**Exit:** signed-off compatibility matrix and benchmark protocol; no new paid infrastructure.
+- The current UI/worker implementation is not established as importable without Qt or camera devices.
+- Model weight origin, model licenses, redistribution rights, and deployment inclusion need review.
+- Existing local queue behavior does not prove end-to-end frame-age measurement, multi-tenant isolation, remote streaming or resource quotas.
+- GPU memory requirements, model warmup, per-session concurrency, provider-specific device support and costs are unknown.
+- Local desktop camera and virtual-camera lifecycle cannot be reused as browser or WhatsApp support without platform-specific work.
 
-### 1. Establish baseline and strengthen observability
+## Non-goals for this phase
 
-Add a reproducible benchmark path matching the application-selected model/provider. Timestamp capture and output using a monotonic clock; measure detection, optional landmarks, inference, compositing, conversion, output send, queue age, drops, input/output FPS, memory and errors. Use aggregate local telemetry only. Record baseline runs before algorithm changes.
-
-**Exit:** three comparable runs on the reference system; p50/p95 stage and frame-age results; known bottleneck identified.
-
-### 2. Harden capture and worker lifecycle
-
-Move potentially blocking camera open/probe off the UI thread, define partial-start cleanup, camera disconnect and device-busy recovery, worker exception propagation, cancellation and deterministic stop. Keep bounded queues and latest-frame behavior; add observable drop/overload status. Add tests with slow/failed camera and processor stubs.
-
-**Exit:** no UI freeze on stalled camera; all workers/resources closed after normal, failed and interrupted starts; queues stay bounded under overload.
-
-### 3. Extract stable engine interfaces
-
-Separate camera source, engine configuration, `FaceSwapEngine` (source embedding, detect/track, process), and `VideoOutput` from PySide UI. Move in small reversible seams and retain existing implementations as adapters. Ensure reusable sessions and source-revision-based cache invalidation; explicit provider/model capability errors.
-
-**Exit:** engine control-flow tests run without Qt or physical camera; existing desktop behavior remains available.
-
-### 4. Add tracking and temporal stability
-
-Evaluate a bounded tracking/association method between detector refreshes; use confidence and lost-track timeouts, smooth landmarks with lag bounds, and force redetection on discontinuities. Compare flicker, landmark jitter, head-turn recovery, occlusion and p95 latency to the baseline. Do not use simple frame averaging as a substitute for tracking.
-
-**Exit:** measurable stability improvement with no violation of frame-age target and safe fallback to fresh detection.
-
-### 5. Validate output adapters and client compatibility
-
-Keep the current `pyvirtualcam`/OBS route first. Verify OS device enumeration, format/rate handling, send failure, multiple consumers and cleanup. Run the named WhatsApp Desktop and Web matrix through supported camera selection and an authorized test call. Native Windows/macOS drivers require separate technical, distribution and security review.
-
-**Exit:** each advertised OS/client matrix row passes sustained call and recovery tests; otherwise mark unsupported.
-
-### 6. Soak, release gate and deferred directions
-
-Run 30-minute sessions, overload/disconnect/restart tests, 720p30 frame pacing and visual quality review. Validate model/license notices and consent text. Decide whether 60 FPS, mobile, web dashboard or remote processing merits separate approval. Document actual support and measured constraints.
-
-**Exit:** reproducible evidence against [performance targets](PERFORMANCE_AND_LATENCY_TARGETS.md), privacy review and support matrix; no marketing claim beyond evidence.
-
-## Decisions requiring approval
-
-- Local desktop product vs. hosted inference architecture (this plan assumes local desktop processing).
-- Supported OS/client/reference-device matrix and acceptance thresholds.
-- Whether to fund/maintain native camera drivers or an independently designed web control plane.
-- Any mobile app, cloud storage, account, subscription, remote GPU, or new paid infrastructure.
-
-## Explicit non-goals for this phase
-
-WhatsApp code injection, undocumented/private APIs, encrypted communication interception, mobile compatibility claims, audio capture/routing, remote GPU/backend migration, model replacement, and production implementation before approval.
-
-## Related assessments
-
-- [WhatsApp compatibility](WHATSAPP_COMPATIBILITY_ASSESSMENT.md)
-- [Real-time pipeline](REALTIME_VIDEO_PIPELINE.md)
-- [Virtual-camera architecture](VIRTUAL_CAMERA_ARCHITECTURE.md)
-- [Performance targets](PERFORMANCE_AND_LATENCY_TARGETS.md)
-- [Mobile compatibility](MOBILE_COMPATIBILITY_ASSESSMENT.md)
+No engine edits, model replacement, dependency installation, provider deployment, frontend/backend source implementation, WhatsApp compatibility claim, camera injection, or production performance claim. See [web roadmap](VSWAP_WEB_IMPLEMENTATION_ROADMAP.md), [worker architecture](CLOUD_GPU_WORKER_ARCHITECTURE.md), and [hybrid processing](HYBRID_PROCESSING_ARCHITECTURE.md).
